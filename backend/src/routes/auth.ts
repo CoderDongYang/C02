@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { prisma } from '../index';
+import { asyncHandler, handleServerError } from '../middleware/asyncHandler';
 
 const router = Router();
 
@@ -17,7 +18,7 @@ const loginSchema = z.object({
   password: z.string().min(6),
 });
 
-router.post('/register', async (req, res) => {
+router.post('/register', asyncHandler(async (req, res) => {
   try {
     const validated = registerSchema.parse(req.body);
 
@@ -69,11 +70,11 @@ router.post('/register', async (req, res) => {
         errors: error.errors,
       });
     }
-    throw error;
+    handleServerError(res, error, 'Registration failed');
   }
-});
+}));
 
-router.post('/login', async (req, res) => {
+router.post('/login', asyncHandler(async (req, res) => {
   try {
     const validated = loginSchema.parse(req.body);
 
@@ -113,8 +114,8 @@ router.post('/login', async (req, res) => {
         errors: error.errors,
       });
     }
-    throw error;
+    handleServerError(res, error, 'Login failed');
   }
-});
+}));
 
 export default router;

@@ -23,14 +23,113 @@ const MAX_RETRIES = 3;
 const REDIS_KEY_PREFIX = 'flowforge:output:';
 const REDIS_KEY_TTL = 3600;
 
-let redisClient: ReturnType<typeof createClient> | null = null;
+let redisClient: any = null;
+let redisConnectionPromise: Promise<any> | null = null;
+let redisAvailable = false;
 
-export async function getRedisClient() {
-  if (redisClient?.isOpen) return redisClient;
-  redisClient = createClient({ url: process.env.REDIS_URL || 'redis://localhost:6379' });
-  redisClient.on('error', (err) => console.error('Redis Client Error:', err));
-  await redisClient.connect();
-  return redisClient;
+const memoryCache = new Map<string, { value: string; expiresAt: number }>();
+
+export async function initRedis(): Promise<boolean> {
+  if (redisClient?.isOpen) return true;
+  if (redisConnectionPromise) {
+    return !!(await redisConnectionPromise);
+  }
+
+  redisConnectionPromise = (async () => {
+    try {
+      const client = createClient({
+        url: process.env.REDIS_URL || 'redis://localhost:6379',
+        socket: {
+          reconnectStrategy: (retries) => {
+            if (retries > 5) {
+              console.warn('Redis reconnection attempts exhausted. Using memory cache.');
+              redisAvailable = false;
+              return new Error('Stop reconnection');
+            }
+            return Math.min(retries * 100, 3000);
+          },
+        },
+      });
+
+      client.on('error', (err) => {
+        console.warn('Redis Client Warning:', err.message);
+        redisAvailable = false;
+      });
+
+      client.on('ready', () => {
+        console.log('Redis connected successfully');
+        redisAvailable = true;
+      });
+
+      client.on('end', () => {
+        redisAvailable = false;
+      });
+
+      await client.connect();
+      redisClient = client;
+      redisAvailable = true;
+      return client;
+    } catch (err) {
+      console.warn('Redis unavailable, falling back to memory cache:', err instanceof Error ? err.message : err);
+      redisAvailable = false;
+      return null;
+    }
+  })();
+
+  return !!(await redisConnectionPromise);
+}
+
+export function isRedisAvailable(): boolean {
+  return redisAvailable && !!(redisClient?.isOpen);
+}
+
+async function storeOutput(runId: string, nodeId: string, output: unknown): Promise<void> {
+  const key = `${REDIS_KEY_PREFIX}${runId}:${nodeId}`;
+  const value = JSON.stringify(output);
+
+  if (isRedisAvailable() && redisClient) {
+    try {
+      await redisClient.set(key, value, { EX: REDIS_KEY_TTL });
+      return;
+    } catch (err) {
+      console.warn('Redis set failed, using memory cache:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  memoryCache.set(key, {
+    value,
+    expiresAt: Date.now() + REDIS_KEY_TTL * 1000,
+  });
+}
+
+async function getUpstreamOutputs(runId: string, upstreamNodeIds: string[]): Promise<Record<string, unknown>> {
+  if (upstreamNodeIds.length === 0) return {};
+  const results: Record<string, unknown> = {};
+
+  if (isRedisAvailable() && redisClient) {
+    try {
+      for (const nodeId of upstreamNodeIds) {
+        const key = `${REDIS_KEY_PREFIX}${runId}:${nodeId}`;
+        const raw = await redisClient.get(key);
+        if (raw) {
+          results[nodeId] = JSON.parse(raw);
+        }
+      }
+      return results;
+    } catch (err) {
+      console.warn('Redis get failed, falling back to memory cache:', err instanceof Error ? err.message : err);
+    }
+  }
+
+  for (const nodeId of upstreamNodeIds) {
+    const key = `${REDIS_KEY_PREFIX}${runId}:${nodeId}`;
+    const entry = memoryCache.get(key);
+    if (entry && entry.expiresAt > Date.now()) {
+      results[nodeId] = JSON.parse(entry.value);
+    }
+  }
+
+  return results;
 }
 
 export function topologicalSort(nodes: DAGNode[], edges: DAGEdge[]): DAGNode[][] {
@@ -76,28 +175,6 @@ export function topologicalSort(nodes: DAGNode[], edges: DAGEdge[]): DAGNode[][]
   }
 
   return levels;
-}
-
-async function storeOutput(runId: string, nodeId: string, output: unknown): Promise<void> {
-  const redis = await getRedisClient();
-  const key = `${REDIS_KEY_PREFIX}${runId}:${nodeId}`;
-  await redis.set(key, JSON.stringify(output), { EX: REDIS_KEY_TTL });
-}
-
-async function getUpstreamOutputs(runId: string, upstreamNodeIds: string[]): Promise<Record<string, unknown>> {
-  if (upstreamNodeIds.length === 0) return {};
-  const redis = await getRedisClient();
-  const results: Record<string, unknown> = {};
-
-  for (const nodeId of upstreamNodeIds) {
-    const key = `${REDIS_KEY_PREFIX}${runId}:${nodeId}`;
-    const raw = await redis.get(key);
-    if (raw) {
-      results[nodeId] = JSON.parse(raw);
-    }
-  }
-
-  return results;
 }
 
 async function executeWithRetry(
@@ -286,3 +363,12 @@ export async function executePipeline(
 
   return run.id;
 }
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of memoryCache.entries()) {
+    if (entry.expiresAt < now) {
+      memoryCache.delete(key);
+    }
+  }
+}, 60000);

@@ -13,7 +13,7 @@ import pipelineRoutes from './routes/pipeline';
 import executionRoutes from './routes/execution';
 import scheduleRoutes from './routes/schedule';
 import { errorHandler } from './middleware/errorHandler';
-import { getRedisClient } from './engine/dagEngine';
+import { initRedis, isRedisAvailable } from './engine/dagEngine';
 import { startScheduler, shutdownScheduler } from './services/scheduler';
 
 const prisma = new PrismaClient();
@@ -40,12 +40,7 @@ app.use('/api/pipelines', executionRoutes);
 app.use('/api/pipelines', scheduleRoutes);
 
 app.get('/api/health', async (req, res) => {
-  let redisStatus = 'disconnected';
-  try {
-    const redis = await getRedisClient();
-    await redis.ping();
-    redisStatus = 'connected';
-  } catch {}
+  const redisStatus = isRedisAvailable() ? 'connected' : 'disconnected';
 
   res.json({
     status: 'ok',
@@ -94,20 +89,27 @@ async function startServer() {
   try {
     await prisma.$connect();
     console.log('Database connected successfully');
-
-    await getRedisClient();
-    console.log('Redis connected successfully');
-
-    await startScheduler(prisma, io);
-
-    server.listen(PORT, () => {
-      console.log(`Server is running on port ${PORT}`);
-      console.log(`Health check: http://localhost:${PORT}/api/health`);
-    });
   } catch (error) {
-    console.error('Failed to start server:', error);
-    process.exit(1);
+    console.warn('Database connection failed. Server will still start, but database operations will fail:',
+      error instanceof Error ? error.message : error);
   }
+
+  try {
+    await initRedis();
+  } catch (error) {
+    console.warn('Redis initialization failed, using memory cache fallback');
+  }
+
+  try {
+    await startScheduler(prisma, io);
+  } catch (error) {
+    console.warn('Scheduler initialization failed:', error instanceof Error ? error.message : error);
+  }
+
+  server.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+    console.log(`Health check: http://localhost:${PORT}/api/health`);
+  });
 }
 
 process.on('SIGINT', () => {

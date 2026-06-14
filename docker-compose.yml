@@ -1,20 +1,21 @@
 services:
-  postgres:
-    image: docker.m.daocloud.io/library/postgres:15-alpine
-    container_name: flowforge-postgres
+  mysql:
+    image: docker.m.daocloud.io/library/mysql:8.0
+    container_name: flowforge-mysql
     environment:
-      POSTGRES_USER: flowforge
-      POSTGRES_PASSWORD: flowforge123
-      POSTGRES_DB: flowforge
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: flowforge
+      MYSQL_USER: flowforge
+      MYSQL_PASSWORD: flowforge123
     ports:
-      - "5432:5432"
+      - "3306:3306"
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - mysql-data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U flowforge"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-prootpassword"]
       interval: 5s
       timeout: 5s
-      retries: 5
+      retries: 10
 
   redis:
     image: redis:7-alpine
@@ -30,5 +31,5 @@ services:
       retries: 5
 
 volumes:
-  postgres-data:
+  mysql-data:
   redis-data:
