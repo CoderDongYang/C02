@@ -1,6 +1,3 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -32,5 +29,57 @@ model Pipeline {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
+  runs      PipelineRun[]
+  schedules Schedule[]
+
   @@index([userId])
+}
+
+model PipelineRun {
+  id         String   @id @default(cuid())
+  pipelineId String
+  pipeline   Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  status     String   @default("pending")
+  trigger    String   @default("manual")
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  nodeExecutions NodeExecution[]
+
+  @@index([pipelineId])
+  @@index([status])
+}
+
+model NodeExecution {
+  id         String   @id @default(cuid())
+  runId      String
+  run        PipelineRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  nodeId     String
+  nodeType   String
+  status     String   @default("pending")
+  input      Json?
+  output     Json?
+  error      String?
+  retryCount Int      @default(0)
+  startedAt  DateTime?
+  finishedAt DateTime?
+  createdAt  DateTime @default(now())
+
+  @@index([runId])
+  @@index([nodeId])
+}
+
+model Schedule {
+  id         String   @id @default(cuid())
+  pipelineId String
+  pipeline   Pipeline @relation(fields: [pipelineId], references: [id], onDelete: Cascade)
+  cronExpr   String
+  enabled    Boolean  @default(true)
+  lastRunAt  DateTime?
+  nextRunAt  DateTime?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([pipelineId])
 }
